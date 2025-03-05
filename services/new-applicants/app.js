@@ -4,6 +4,8 @@ console.log('[ARRANQUE] ===== VERSIÓN FINAL ULTRAVIOLETA - 25 FEBRERO 2025 ====
 // Importaciones básicas
 const { MongoClient } = require('mongodb');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
+const validator = require('validator');
+const sanitize = require('mongo-sanitize');
 
 // Función para normalizar la ruta (eliminar prefijo /prod si existe)
 const normalizePath = (path) => {
@@ -194,32 +196,51 @@ exports.handler = async (event, context) => {
         const db = dbClient.db();
         const collection = db.collection('applicants');
         
-        // Extraer datos del cuerpo
         let body = {};
         if (event.body) {
           try {
             body = JSON.parse(event.body);
+            // Sanitizar input
+            body = sanitize(body);
             console.log(`[BODY_PARSE_SUCCESS] Datos recibidos: ${JSON.stringify(body)}`);
           } catch (e) {
             console.error(`[BODY_PARSE_ERROR] Error al parsear JSON: ${e.message}`);
           }
-        } else {
-          console.log("[BODY_EMPTY] No se recibieron datos en el cuerpo");
         }
 
-        // Validar datos mínimos
-        if (!body.email) {
-          console.log("[VALIDATION_ERROR] Email requerido");
-          const response = {
+        // Validación mejorada de email
+        if (!body.email || !validator.isEmail(body.email)) {
+          return {
             statusCode: 400,
-            body: JSON.stringify({ error: 'Email es requerido' }),
+            body: JSON.stringify({ 
+              error: 'Email inválido o no proporcionado' 
+            }),
             headers: {
               'Content-Type': 'application/json',
               'Access-Control-Allow-Origin': '*'
             }
           };
-          console.log(`[LAMBDA_RESULT_EXPLICIT] Respuesta: \nStatus ${response.statusCode}\nBody: ${response.body}`);
-          return response;
+        }
+
+        // Verificar duplicados recientes
+        const recentApplication = await collection.findOne({
+          email: body.email,
+          createdAt: { 
+            $gt: new Date(Date.now() - 24 * 60 * 60 * 1000) // últimas 24h
+          }
+        });
+
+        if (recentApplication) {
+          return {
+            statusCode: 429,
+            body: JSON.stringify({ 
+              error: 'Ya existe una aplicación reciente con este email' 
+            }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
         }
 
         // Guardar en la base de datos
