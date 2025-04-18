@@ -298,6 +298,16 @@ exports.handler = async (event, context) => {
               description: 'Enviar una nueva aplicación'
             },
             {
+              path: '/wallets',
+              method: 'POST',
+              description: 'Registrar wallet de usuario'
+            },
+            {
+              path: '/wallets',
+              method: 'GET',
+              description: 'Obtener wallets de usuarios'
+            },
+            {
               path: '/test',
               method: 'GET',
               description: 'Verificar que la API está funcionando'
@@ -311,6 +321,181 @@ exports.handler = async (event, context) => {
       };
       console.log(`[LAMBDA_RESULT_EXPLICIT] Respuesta: \nStatus ${response.statusCode}\nBody: ${response.body}`);
       return response;
+    }
+
+    // Ruta /wallets - Registrar wallet de usuario
+    if ((normalizedPath === '/wallets' || normalizedPath === 'wallets' || path === '/wallets' || path === '/prod/wallets')) {
+      console.log("[ROUTE_MATCH] Ruta /wallets coincide");
+      
+      // GET /wallets - Obtener todos los usuarios y wallets
+      if (method === 'GET') {
+        try {
+          const db = dbClient.db();
+          const collection = db.collection('wallets');
+          
+          console.log("[DB_OPERATION] Obteniendo todos los usuarios y wallets");
+          const wallets = await collection.find({}).toArray();
+          
+          return {
+            statusCode: 200,
+            body: JSON.stringify({ 
+              message: 'Wallets obtenidas correctamente',
+              count: wallets.length,
+              wallets: wallets
+            }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
+        } catch (error) {
+          console.error(`[DB_ERROR] Error al obtener wallets: ${error.message}`);
+          return {
+            statusCode: 500,
+            body: JSON.stringify({ error: 'Error al obtener las wallets' }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
+        }
+      }
+      
+      // POST /wallets - Registrar wallet de usuario
+      if (method === 'POST') {
+        try {
+          const db = dbClient.db();
+          const collection = db.collection('wallets');
+          
+          let body = {};
+          if (event.body) {
+            try {
+              body = JSON.parse(event.body);
+              // Sanitizar input
+              body = sanitize(body);
+              console.log(`[BODY_PARSE_SUCCESS] Datos recibidos: ${JSON.stringify(body)}`);
+            } catch (e) {
+              console.error(`[BODY_PARSE_ERROR] Error al parsear JSON: ${e.message}`);
+              return {
+                statusCode: 400,
+                body: JSON.stringify({ error: 'Error al procesar el JSON del body' }),
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                }
+              };
+            }
+          }
+
+          // Validar que se proporcionaron los campos requeridos
+          if (!body.username || !body.wallet) {
+            return {
+              statusCode: 400,
+              body: JSON.stringify({ error: 'Se requieren username y wallet' }),
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              }
+            };
+          }
+
+          // Validar formato de wallet (dirección de Avalanche C-Chain)
+          const walletRegex = /^0x[a-fA-F0-9]{40}$/;
+          if (!walletRegex.test(body.wallet)) {
+            return {
+              statusCode: 400,
+              body: JSON.stringify({ error: 'Formato de wallet inválido' }),
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              }
+            };
+          }
+
+          // Buscar si el usuario ya existe
+          const existingUser = await collection.findOne({ username: body.username });
+          
+          // Buscar si la wallet ya está registrada para otro usuario
+          const existingWallet = await collection.findOne({ 
+            wallet: body.wallet,
+            username: { $ne: body.username }
+          });
+
+          if (existingWallet) {
+            return {
+              statusCode: 400,
+              body: JSON.stringify({ 
+                error: 'Abre un ticket en discord para soporte',
+                details: 'Wallet ya registrada para otro usuario'
+              }),
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              }
+            };
+          }
+
+          if (existingUser) {
+            // Si el usuario existe, verificar si la wallet coincide
+            if (existingUser.wallet === body.wallet) {
+              return {
+                statusCode: 200,
+                body: JSON.stringify({ 
+                  message: 'OK',
+                  details: 'Usuario y wallet ya registrados'
+                }),
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                }
+              };
+            } else {
+              return {
+                statusCode: 400,
+                body: JSON.stringify({ 
+                  error: 'Abre un ticket en discord para soporte',
+                  details: 'Wallet no coincide con el registro existente'
+                }),
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                }
+              };
+            }
+          }
+
+          // Si llegamos aquí, el usuario no existe y la wallet no está registrada
+          // Insertar nuevo registro
+          const result = await collection.insertOne({
+            username: body.username,
+            wallet: body.wallet,
+            createdAt: new Date()
+          });
+
+          return {
+            statusCode: 201,
+            body: JSON.stringify({ 
+              message: 'Wallet registrada correctamente',
+              id: result.insertedId
+            }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
+
+        } catch (error) {
+          console.error(`[DB_ERROR] Error al procesar wallet: ${error.message}`);
+          return {
+            statusCode: 500,
+            body: JSON.stringify({ error: 'Error al procesar la solicitud' }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
+        }
+      }
     }
 
     // Si llegamos aquí, no se encontró la ruta
