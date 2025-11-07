@@ -22,4 +22,10 @@ variable "environment_variables" {
   description = "Variables de entorno para la función Lambda"
   type        = map(string)
   default     = {}
+}
+
+variable "s3_read_buckets" {
+  description = "Lista de buckets S3 a los que la Lambda necesita acceso de lectura"
+  type        = list(string)
+  default     = []
 } 

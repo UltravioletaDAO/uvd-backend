@@ -44,4 +44,37 @@ resource "aws_iam_policy" "secrets_manager_access" {
 resource "aws_iam_role_policy_attachment" "secrets_manager_attachment" {
   role       = aws_iam_role.lambda_role.name
   policy_arn = aws_iam_policy.secrets_manager_access.arn
+}
+
+# Política opcional para acceso de lectura a S3
+resource "aws_iam_policy" "s3_read_access" {
+  count       = length(var.s3_read_buckets) > 0 ? 1 : 0
+  name        = "${var.function_name}-s3-read-policy"
+  description = "Permite a la función Lambda leer de buckets S3 específicos"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Effect = "Allow"
+        Resource = flatten([
+          for bucket in var.s3_read_buckets : [
+            "arn:aws:s3:::${bucket}",
+            "arn:aws:s3:::${bucket}/*"
+          ]
+        ])
+      }
+    ]
+  })
+}
+
+# Adjuntar la política de S3 al rol de Lambda (si está definida)
+resource "aws_iam_role_policy_attachment" "s3_read_attachment" {
+  count      = length(var.s3_read_buckets) > 0 ? 1 : 0
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.s3_read_access[0].arn
 } 
