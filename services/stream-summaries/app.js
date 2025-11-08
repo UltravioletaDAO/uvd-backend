@@ -2,10 +2,9 @@
 // Version 1.0.0 - November 2025
 console.log('[STREAM-SUMMARIES] ===== Starting Stream Summaries API with x402 =====');
 
-const express = require('express');
-const serverless = require('serverless-http');
-const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { paymentMiddleware } = require('x402-express');
+import express from 'express';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { paymentMiddleware } from 'x402-express';
 
 // Configuration
 const RECEIVING_WALLET = '0x52110a2Cc8B6bBf846101265edAAe34E753f3389';
@@ -187,38 +186,80 @@ app.get('/summaries/latest', async (req, res) => {
 // PROTECTED ENDPOINTS (Payment required)
 // ============================================
 
-// Configure x402 middleware for protected routes
-// The facilitator supports multiple networks, so clients can pay with any of them
-// x402 middleware + facilitator will verify payment on any supported network
+// Configure x402 middleware for old summaries only
 const protectedRoutes = {
   'GET /summaries/:id': {
     price: PRICE_PER_SUMMARY,
-    network: 'base', // Default network (clients can use any supported network)
+    network: 'base',
     config: {
       description: 'Access to stream summary - Payment accepted on multiple networks',
       resource: 'stream-summary-full-content',
-      supportedNetworks: SUPPORTED_NETWORKS // Info for clients
+      supportedNetworks: SUPPORTED_NETWORKS
     }
   }
 };
 
-// Note: x402 middleware handles payment verification
-// The facilitator will check if payment was made on any of the supported networks
-app.use(paymentMiddleware(
-  RECEIVING_WALLET,
-  protectedRoutes,
-  {
-    url: FACILITATOR_URL
+// Custom middleware to conditionally apply payment protection
+// Latest summary is always free, older summaries require payment
+const conditionalPaymentMiddleware = async (req, res, next) => {
+  // Only apply to /summaries/:id route
+  if (!req.path.match(/^\/summaries\/[^/]+$/)) {
+    return next();
   }
-));
 
-// Get specific summary by ID (PROTECTED - Requires payment)
+  try {
+    const { id } = req.params;
+    const language = req.query.lang || 'es';
+
+    // Fetch index to determine if this is the latest summary
+    const indexKey = `stream-summaries/index_${language}.json`;
+    const index = await readFromS3(indexKey);
+
+    // Get latest summary
+    const latest = await getLatestSummary(language);
+
+    // If this is the latest summary, bypass payment
+    if (id === latest.video_id) {
+      console.log(`[MIDDLEWARE] Summary ${id} is latest - bypassing payment`);
+      req.isLatestSummary = true;
+      return next();
+    }
+
+    // For older summaries, apply payment verification
+    console.log(`[MIDDLEWARE] Summary ${id} is not latest - checking payment`);
+    req.isLatestSummary = false;
+
+    // Apply x402 payment middleware
+    const x402Middleware = paymentMiddleware(
+      RECEIVING_WALLET,
+      protectedRoutes,
+      { url: FACILITATOR_URL }
+    );
+
+    return x402Middleware(req, res, next);
+
+  } catch (error) {
+    console.error('[MIDDLEWARE_ERROR] Error in conditional payment middleware:', error);
+    // On error, require payment to be safe
+    const x402Middleware = paymentMiddleware(
+      RECEIVING_WALLET,
+      protectedRoutes,
+      { url: FACILITATOR_URL }
+    );
+    return x402Middleware(req, res, next);
+  }
+};
+
+// Apply conditional payment middleware
+app.use(conditionalPaymentMiddleware);
+
+// Get specific summary by ID
 app.get('/summaries/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const language = req.query.lang || 'es';
 
-    // First, fetch index to find summary metadata
+    // Fetch index to find summary metadata
     const indexKey = `stream-summaries/index_${language}.json`;
     const index = await readFromS3(indexKey);
 
@@ -232,24 +273,27 @@ app.get('/summaries/:id', async (req, res) => {
       });
     }
 
-    // Check if this is the latest summary (should be free)
-    const latest = await getLatestSummary(language);
-    if (summaryMeta.video_id === latest.video_id) {
-      // Redirect to /latest endpoint
-      return res.redirect(308, `/summaries/latest?lang=${language}`);
-    }
-
     // Fetch full summary from S3
     const summaryKey = `stream-summaries/${summaryMeta.streamer}/${summaryMeta.fecha_stream}/${summaryMeta.video_id}.${language}.json`;
     const fullSummary = await readFromS3(summaryKey);
 
-    console.log(`[PAID_ACCESS] Serving summary ${id} to paid user`);
+    // Log whether this was free or paid access
+    if (req.isLatestSummary) {
+      console.log(`[LATEST_FREE] Serving latest summary ${id} for free`);
+      return res.json({
+        success: true,
+        data: fullSummary,
+        message: 'This is the latest summary - always free!'
+      });
+    } else {
+      console.log(`[PAID_ACCESS] Serving summary ${id} to paid user`);
+      return res.json({
+        success: true,
+        data: fullSummary,
+        message: 'Thank you for your payment!'
+      });
+    }
 
-    res.json({
-      success: true,
-      data: fullSummary,
-      message: 'Thank you for your payment!'
-    });
   } catch (error) {
     console.error('[ERROR] Failed to fetch summary:', error);
     res.status(500).json({
@@ -283,13 +327,11 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Export Lambda handler
-module.exports.handler = serverless(app);
+// Start server (for Fargate/Docker or local testing)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`[FARGATE] Server running on http://localhost:${PORT}`);
+});
 
-// For local testing
-if (require.main === module) {
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
-    console.log(`[LOCAL] Server running on http://localhost:${PORT}`);
-  });
-}
+// Export app for testing
+export default app;
