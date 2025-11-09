@@ -188,25 +188,25 @@ app.get('/summaries/latest', async (req, res) => {
 
 // Configure x402 middleware for protected routes
 // This middleware will verify payments via the facilitator
+// Format from docs: https://x402.gitbook.io/x402/getting-started/quickstart-for-sellers
 const protectedRoutes = {
   'GET /summaries/:id': {
-    price: PRICE_PER_SUMMARY,
-    network: 'base',
-    config: {
-      description: 'Access to stream summary - Payment via facilitator',
-      resource: 'stream-summary-full-content',
-      supportedNetworks: SUPPORTED_NETWORKS
-    }
+    price: PRICE_PER_SUMMARY,  // "$0.05" in USDC
+    network: 'base'  // Primary network for pricing
   }
 };
 
 // Create x402 payment middleware instance with facilitator
+// Third parameter contains facilitator config and optional settings
 console.log('[X402] Configuring payment middleware with facilitator:', FACILITATOR_URL);
+console.log('[X402] Protected routes:', JSON.stringify(protectedRoutes, null, 2));
 const x402Middleware = paymentMiddleware(
   RECEIVING_WALLET,
   protectedRoutes,
   {
-    url: FACILITATOR_URL  // ← KEY: Facilitator URL for payment verification
+    url: FACILITATOR_URL,  // ← KEY: Facilitator URL for payment verification
+    description: 'Access to stream summary - Payment accepted on multiple networks',
+    resource: 'stream-summary-full-content'
   }
 );
 console.log('[X402] Payment middleware configured successfully');
