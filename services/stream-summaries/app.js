@@ -214,14 +214,11 @@ console.log('[X402] Payment middleware configured successfully');
 // Custom middleware to conditionally apply payment protection
 // Latest summary is always free, older summaries require payment via facilitator
 const conditionalPaymentMiddleware = async (req, res, next) => {
-  // Only apply to /summaries/:id route (not /summaries/latest)
-  if (!req.path.match(/^\/summaries\/[^/]+$/) || req.path === '/summaries/latest') {
-    return next();
-  }
-
   try {
     const { id } = req.params;
     const language = req.query.lang || 'es';
+
+    console.log(`[CONDITIONAL] Checking if summary ${id} is latest...`);
 
     // Fetch index to determine if this is the latest summary
     const indexKey = `stream-summaries/index_${language}.json`;
@@ -230,15 +227,17 @@ const conditionalPaymentMiddleware = async (req, res, next) => {
     // Get latest summary
     const latest = await getLatestSummary(language);
 
+    console.log(`[CONDITIONAL] Latest video_id: ${latest.video_id}, Requested: ${id}`);
+
     // If this is the latest summary, bypass payment
     if (id === latest.video_id) {
-      console.log(`[MIDDLEWARE] Summary ${id} is latest - bypassing payment`);
+      console.log(`[MIDDLEWARE] Summary ${id} IS LATEST - bypassing payment`);
       req.isLatestSummary = true;
       return next();
     }
 
     // For older summaries, apply x402 payment verification via facilitator
-    console.log(`[MIDDLEWARE] Summary ${id} is not latest - verifying payment via facilitator`);
+    console.log(`[MIDDLEWARE] Summary ${id} is NOT latest - verifying payment via facilitator`);
     req.isLatestSummary = false;
 
     // Apply x402 middleware to verify payment via facilitator
@@ -252,12 +251,10 @@ const conditionalPaymentMiddleware = async (req, res, next) => {
   }
 };
 
-// Apply conditional payment middleware that wraps x402
-app.use(conditionalPaymentMiddleware);
-
 // Get specific summary by ID
 // Business Logic: Latest summary is FREE, older summaries require payment via facilitator
-app.get('/summaries/:id', async (req, res) => {
+// Apply conditional middleware directly to this route
+app.get('/summaries/:id', conditionalPaymentMiddleware, async (req, res) => {
   try {
     const { id } = req.params;
     const language = req.query.lang || 'es';
