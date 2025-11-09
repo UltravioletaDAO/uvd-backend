@@ -186,78 +186,15 @@ app.get('/summaries/latest', async (req, res) => {
 // PROTECTED ENDPOINTS (Payment required)
 // ============================================
 
-// Configure x402 middleware for protected routes
-// This middleware will verify payments via the facilitator
-// Format from docs: https://x402.gitbook.io/x402/getting-started/quickstart-for-sellers
-const protectedRoutes = {
-  'GET /summaries/:id': {
-    price: PRICE_PER_SUMMARY,  // "$0.05" in USDC
-    network: 'base'  // Primary network for pricing
-  }
-};
-
-// Create x402 payment middleware instance with facilitator
-// Third parameter contains facilitator config and optional settings
-console.log('[X402] Configuring payment middleware with facilitator:', FACILITATOR_URL);
-console.log('[X402] Protected routes:', JSON.stringify(protectedRoutes, null, 2));
-const x402Middleware = paymentMiddleware(
-  RECEIVING_WALLET,
-  protectedRoutes,
-  {
-    url: FACILITATOR_URL,  // ← KEY: Facilitator URL for payment verification
-    description: 'Access to stream summary - Payment accepted on multiple networks',
-    resource: 'stream-summary-full-content'
-  }
-);
-console.log('[X402] Payment middleware configured successfully');
-
-// Custom middleware to conditionally apply payment protection
-// Latest summary is always free, older summaries require payment via facilitator
-const conditionalPaymentMiddleware = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const language = req.query.lang || 'es';
-
-    console.log(`[CONDITIONAL] Checking if summary ${id} is latest...`);
-
-    // Fetch index to determine if this is the latest summary
-    const indexKey = `stream-summaries/index_${language}.json`;
-    const index = await readFromS3(indexKey);
-
-    // Get latest summary
-    const latest = await getLatestSummary(language);
-
-    console.log(`[CONDITIONAL] Latest video_id: ${latest.video_id}, Requested: ${id}`);
-
-    // If this is the latest summary, bypass payment
-    if (id === latest.video_id) {
-      console.log(`[MIDDLEWARE] Summary ${id} IS LATEST - bypassing payment`);
-      req.isLatestSummary = true;
-      return next();
-    }
-
-    // For older summaries, apply x402 payment verification via facilitator
-    console.log(`[MIDDLEWARE] Summary ${id} is NOT latest - verifying payment via facilitator`);
-    req.isLatestSummary = false;
-
-    // Apply x402 middleware to verify payment via facilitator
-    // This will either return 402 or call next() if payment verified
-    return x402Middleware(req, res, next);
-
-  } catch (error) {
-    console.error('[MIDDLEWARE_ERROR] Error in conditional payment middleware:', error);
-    // On error, require payment to be safe
-    return x402Middleware(req, res, next);
-  }
-};
-
 // Get specific summary by ID
-// Business Logic: Latest summary is FREE, older summaries require payment via facilitator
-// Apply conditional middleware directly to this route
-app.get('/summaries/:id', conditionalPaymentMiddleware, async (req, res) => {
+// Business Logic: Latest summary is FREE, older summaries require payment
+// Payment verification is handled CLIENT-SIDE using x402-fetch
+app.get('/summaries/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const language = req.query.lang || 'es';
+
+    console.log(`[GET /summaries/${id}] Request received`);
 
     // Fetch index to find summary metadata
     const indexKey = `stream-summaries/index_${language}.json`;
@@ -273,26 +210,48 @@ app.get('/summaries/:id', conditionalPaymentMiddleware, async (req, res) => {
       });
     }
 
-    // Fetch full summary from S3
-    const summaryKey = `stream-summaries/${summaryMeta.streamer}/${summaryMeta.fecha_stream}/${summaryMeta.video_id}.${language}.json`;
-    const fullSummary = await readFromS3(summaryKey);
+    // Check if this is the latest summary
+    const latest = await getLatestSummary(language);
+    const isLatest = summaryMeta.video_id === latest.video_id;
 
-    // Log whether this was free or paid access
-    if (req.isLatestSummary) {
+    if (isLatest) {
+      // Latest summary is always FREE - serve it directly
+      const summaryKey = `stream-summaries/${summaryMeta.streamer}/${summaryMeta.fecha_stream}/${summaryMeta.video_id}.${language}.json`;
+      const fullSummary = await readFromS3(summaryKey);
+
       console.log(`[LATEST_FREE] Serving latest summary ${id} for free`);
+
       return res.json({
         success: true,
         data: fullSummary,
         message: 'This is the latest summary - always free!'
       });
-    } else {
-      console.log(`[PAID_ACCESS] Serving summary ${id} - payment verified by facilitator`);
-      return res.json({
-        success: true,
-        data: fullSummary,
-        message: 'Thank you for your payment!'
-      });
     }
+
+    // For older summaries, return 402 Payment Required with x402 format
+    // Client will handle payment using x402-fetch
+    console.log(`[PAYMENT_REQUIRED] Summary ${id} requires payment`);
+
+    return res.status(402).json({
+      message: 'Payment Required',
+      accepts: [{
+        payTo: RECEIVING_WALLET,
+        asset: 'USDC',
+        network: 'base',
+        amount: '50000', // 0.05 USDC (6 decimals: 0.05 * 10^6 = 50000)
+        description: 'Access to stream summary',
+        resource: `/summaries/${id}`,
+        facilitator: FACILITATOR_URL,
+        supportedNetworks: SUPPORTED_NETWORKS
+      }],
+      summary: {
+        video_id: summaryMeta.video_id,
+        streamer: summaryMeta.streamer,
+        titulo: summaryMeta.titulo,
+        fecha_stream: summaryMeta.fecha_stream,
+        thumbnail_url: summaryMeta.thumbnail_url
+      }
+    });
 
   } catch (error) {
     console.error('[ERROR] Failed to fetch summary:', error);
