@@ -67,26 +67,20 @@ module "new_applicants_api" {
   }
 }
 
-# API de Stream Summaries con x402 Payment Protection
-module "stream_summaries_api" {
-  source = "../../modules/lambda-api"
-
-  function_name   = "ultravioleta-stream-summaries"
-  source_dir      = "../../services/stream-summaries"
-  artifact_bucket = aws_s3_bucket.lambda_artifacts.bucket
-  artifact_key    = "stream-summaries.zip"
-
-  # Permisos de lectura al bucket de resúmenes
-  s3_read_buckets = ["ultravioletadao"]
-
-  environment_variables = {
-    NODE_ENV          = "production"
-    S3_BUCKET         = "ultravioletadao"
-    S3_REGION         = "us-east-1"
-    FACILITATOR_URL   = "https://facilitator.ultravioletadao.xyz"
-    RECEIVING_WALLET  = "0x52110a2Cc8B6bBf846101265edAAe34E753f3389"
-  }
-}
+# ============================================
+# Stream Summaries Service - REMOVED 2026-01-09
+# ============================================
+# Was: ECS Fargate service for x402 payments on stream summaries
+# Removed because: x402 never worked, S3 fallback is sufficient
+# Cost savings: ~$20-30/month (ALB + Fargate)
+#
+# To redeploy if needed in the future:
+# - module: ../../modules/fargate-service
+# - service_name: stream-summaries
+# - container_port: 3000
+# - cpu: 256, memory: 512
+# - domain: stream-summaries-api.ultravioletadao.xyz
+# - See git history for full configuration
 
 # Outputs
 output "new_applicants_api_url" {
@@ -107,13 +101,4 @@ output "artifact_bucket" {
   description = "Nombre del bucket S3 creado para almacenar los artefactos de Lambda"
 }
 
-# Stream Summaries API outputs
-output "stream_summaries_api_url" {
-  value       = module.stream_summaries_api.api_url
-  description = "URL del API de Stream Summaries con x402"
-}
-
-output "stream_summaries_function" {
-  value       = module.stream_summaries_api.function_name
-  description = "Nombre de la función Lambda de Stream Summaries"
-} 
+# Stream Summaries outputs - REMOVED (service destroyed 2026-01-09) 

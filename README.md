@@ -388,6 +388,56 @@ if ((normalizedPath === '/users' || normalizedPath === 'users') && method === 'P
 }
 ```
 
+## Servicios Eliminados (Archivo Histórico)
+
+Esta sección documenta servicios que fueron eliminados para reducir costos pero pueden ser redesplegados si se necesitan.
+
+### Stream Summaries (ECS Fargate) - Eliminado 2026-01-09
+
+**Propósito original:** API para servir resúmenes de streams con soporte x402 para micropagos.
+
+**Razón de eliminación:** x402 nunca funcionó correctamente, el frontend usa fallback a S3 que es suficiente.
+
+**Ahorro:** ~$20-30/mes (ALB + Fargate)
+
+**Cómo redesplegar si se necesita:**
+
+```hcl
+module "stream_summaries_fargate" {
+  source = "../../modules/fargate-service"
+
+  service_name         = "stream-summaries"
+  ecr_repository_name  = "ultravioleta/stream-summaries"
+  docker_image_tag     = "latest"
+  container_port       = 3000
+  cpu                  = 256    # 0.25 vCPU
+  memory               = 512    # 512 MB
+  desired_count        = 1
+  health_check_path    = "/health"
+  region               = "us-east-2"
+  enable_https         = true
+  domain_name          = "stream-summaries-api.ultravioletadao.xyz"
+  hosted_zone_name     = "ultravioletadao.xyz"
+
+  environment_variables = {
+    NODE_ENV          = "production"
+    PORT              = "3000"
+    S3_BUCKET         = "ultravioletadao"
+    S3_REGION         = "us-east-1"
+    FACILITATOR_URL   = "https://facilitator.ultravioletadao.xyz"
+    RECEIVING_WALLET  = "0x52110a2Cc8B6bBf846101265edAAe34E753f3389"
+  }
+}
+```
+
+**Componentes que creaba:**
+- ECS Cluster: `stream-summaries-cluster`
+- ECS Service: `stream-summaries`
+- ALB: `stream-summaries-alb`
+- ECR Repository: `ultravioleta/stream-summaries`
+- Route53 Record: `stream-summaries-api.ultravioletadao.xyz`
+- ACM Certificate para HTTPS
+
 ## Contacto
 
 Para más información sobre Ultravioleta DAO, visita [ultravioletadao.xyz](https://ultravioletadao.xyz).
