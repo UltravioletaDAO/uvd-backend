@@ -327,20 +327,27 @@ exports.handler = async (event, context) => {
     if ((normalizedPath === '/wallets' || normalizedPath === 'wallets' || path === '/wallets' || path === '/prod/wallets')) {
       console.log("[ROUTE_MATCH] Ruta /wallets coincide");
       
-      // GET /wallets - Obtener todos los usuarios y wallets
+      // GET /wallets - Obtener usuarios y wallets con paginación defensiva
       if (method === 'GET') {
         try {
           const db = dbClient.db();
           const collection = db.collection('wallets');
-          
-          console.log("[DB_OPERATION] Obteniendo todos los usuarios y wallets");
-          const wallets = await collection.find({}).toArray();
-          
+
+          const PAGE_SIZE = 50;
+          const queryParams = event.queryStringParameters || {};
+          const page = Math.max(0, parseInt(queryParams.page || '0', 10) || 0);
+          const skip = page * PAGE_SIZE;
+
+          console.log(`[DB_OPERATION] Obteniendo wallets - page=${page}, skip=${skip}, limit=${PAGE_SIZE}`);
+          const wallets = await collection.find({}).skip(skip).limit(PAGE_SIZE).toArray();
+
           return {
             statusCode: 200,
-            body: JSON.stringify({ 
+            body: JSON.stringify({
               message: 'Wallets obtenidas correctamente',
               count: wallets.length,
+              page: page,
+              pageSize: PAGE_SIZE,
               wallets: wallets
             }),
             headers: {

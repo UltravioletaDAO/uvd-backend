@@ -14,6 +14,11 @@
 *.tfvars
 **/.terraform.lock.hcl
 **/terraform.tfstate.d/
+# Planes binarios y output de plan (pueden contener variables sensibles)
+tfplan*
+**/tfplan*
+plan_output*.txt
+apply_output*.log
 
 # Environment
 **/.env

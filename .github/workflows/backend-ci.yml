@@ -1,0 +1,147 @@
+# Backend CI/CD — UltravioletaDAO
+# PR  : lambda tests + terraform fmt/validate/tflint/checkov + plan (comentado en el PR)
+# main: apply gated por GitHub Environment "production" (aprobación manual) + health check
+#
+# Setup requerido (ver docs/PIPELINE_SETUP.md):
+#   - Secrets del repo: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#   - GitHub Environment "production" con required reviewers
+#   - Branch protection en main requiriendo los checks de abajo
+name: Backend CI/CD
+
+# Flujo: push a develop (corre tests+checks) → PR a main → push a main (apply prod gated)
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [main]
+
+env:
+  TF_VERSION: '1.14.3'
+  AWS_REGION: 'us-east-2'
+  WORKING_DIR: environments/prod
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # 1 ── Tests unitarios del Lambda (red de seguridad principal) ──────
+  lambda-tests:
+    name: Lambda Unit Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/new-applicants
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: services/new-applicants/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test (jest)
+        run: npm test
+
+  # 2 ── Gates de calidad de Terraform ───────────────────────────────
+  terraform-checks:
+    name: Terraform Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: fmt check
+        run: terraform fmt -check -recursive
+
+      - name: validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+      - run: tflint --init && tflint --recursive
+
+      # checkov en soft_fail al inicio (reporta sin bloquear). Endurecer a
+      # soft_fail:false cuando los findings estén triados — ver PIPELINE_SETUP.md
+      - name: checkov security scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          soft_fail: true
+
+  # 3 ── Plan en PR (comentado para revisión humana) ─────────────────
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: [lambda-tests, terraform-checks]
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
+      - name: plan
+        id: plan
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
+      - name: Comentar plan en el PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const p = fs.readFileSync('${{ env.WORKING_DIR }}/plan_output.txt', 'utf8');
+            const max = 65000;
+            const body = p.length > max ? p.slice(0, max) + '\n\n...(truncado)' : p;
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '### Terraform Plan\n```\n' + body + '\n```'
+            });
+
+  # 4 ── Apply a producción (gated + health check) ───────────────────
+  terraform-apply:
+    name: Terraform Apply (producción)
+    runs-on: ubuntu-latest
+    needs: [lambda-tests, terraform-checks]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment:
+      name: production
+      url: https://api.ultravioletadao.xyz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: init + apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init && terraform apply -auto-approve
+      - name: Health check post-deploy
+        run: |
+          sleep 30
+          S=$(curl -s -o /dev/null -w "%{http_code}" https://api.ultravioletadao.xyz/test)
+          echo "Status: $S"
+          [ "$S" = "200" ] || { echo "Health check FALLÓ ($S)"; exit 1; }
+          echo "Health check OK"

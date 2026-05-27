@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     time = {
-      source = "hashicorp/time"
+      source  = "hashicorp/time"
       version = "~> 0.9.0"
     }
   }
@@ -16,10 +16,9 @@ provider "time" {}
 # Bucket para artefactos Lambda - configurado para usar el existente
 resource "aws_s3_bucket" "lambda_artifacts" {
   bucket = "ultravioleta-artifacts-20250225"
-  
-  # Permitir destrucción cuando sea necesario
-  force_destroy = true
-  
+
+  force_destroy = false
+
   # Configuración especial para manejar bucket existente
   lifecycle {
     # Prevenir error "BucketAlreadyOwnedByYou"
@@ -38,7 +37,7 @@ resource "aws_s3_bucket" "lambda_artifacts" {
 # a un bucket existente sin problemas
 resource "aws_s3_bucket_versioning" "lambda_artifacts" {
   bucket = aws_s3_bucket.lambda_artifacts.id
-  
+
   versioning_configuration {
     status = "Enabled"
   }
@@ -46,7 +45,7 @@ resource "aws_s3_bucket_versioning" "lambda_artifacts" {
 
 resource "aws_s3_bucket_public_access_block" "lambda_artifacts" {
   bucket = aws_s3_bucket.lambda_artifacts.id
-  
+
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -57,10 +56,10 @@ resource "aws_s3_bucket_public_access_block" "lambda_artifacts" {
 module "new_applicants_api" {
   source = "../../modules/lambda-api"
 
-  function_name = "ultravioleta-new-applicants"
-  source_dir    = "../../services/new-applicants"
+  function_name   = "ultravioleta-new-applicants"
+  source_dir      = "../../services/new-applicants"
   artifact_bucket = aws_s3_bucket.lambda_artifacts.bucket
-  artifact_key  = "new-applicants.zip"
+  artifact_key    = "new-applicants.zip"
 
   environment_variables = {
     NODE_ENV = "production"
@@ -97,7 +96,7 @@ output "new_applicants_function" {
 
 # Bucket generado
 output "artifact_bucket" {
-  value = aws_s3_bucket.lambda_artifacts.bucket
+  value       = aws_s3_bucket.lambda_artifacts.bucket
   description = "Nombre del bucket S3 creado para almacenar los artefactos de Lambda"
 }
 

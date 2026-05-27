@@ -35,7 +35,7 @@ resource "aws_dynamodb_table" "terraform_locks" {
 
 # Crear el secreto en Secrets Manager
 resource "aws_secretsmanager_secret" "mongodb_uri" {
-  name = "ultravioletadao-atlas-mongodb-prod"
+  name        = "ultravioletadao-atlas-mongodb-prod"
   description = "MongoDB Atlas URI para producción"
 }
 
@@ -43,7 +43,7 @@ resource "aws_secretsmanager_secret" "mongodb_uri" {
 resource "aws_secretsmanager_secret_version" "mongodb_uri" {
   secret_id = aws_secretsmanager_secret.mongodb_uri.id
   secret_string = jsonencode({
-    uri = var.mongodb_uri  # Definir esta variable en terraform.tfvars
+    uri = var.mongodb_uri # Definir esta variable en terraform.tfvars
   })
 }
 

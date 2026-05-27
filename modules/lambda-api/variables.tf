@@ -28,4 +28,16 @@ variable "s3_read_buckets" {
   description = "Lista de buckets S3 a los que la Lambda necesita acceso de lectura"
   type        = list(string)
   default     = []
+}
+
+variable "debug" {
+  description = "Habilitar modo debug en la función Lambda"
+  type        = string
+  default     = "false"
+}
+
+variable "log_level" {
+  description = "Nivel de logging de la función Lambda"
+  type        = string
+  default     = "error"
 } 

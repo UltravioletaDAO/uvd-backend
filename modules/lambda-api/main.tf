@@ -1,7 +1,29 @@
+data "external" "source_hash" {
+  program = ["powershell", "-Command", <<EOT
+    $path = Resolve-Path '${var.source_dir}'
+    $exclude = @('.env', '.git', '*.test.js', 'node_modules', '*.zip')
+
+    $files = Get-ChildItem -Path $path -Recurse -File |
+      Where-Object {
+        $file = $_
+        -not ($exclude | Where-Object { $file.FullName -like "*$_*" })
+      } | Sort-Object FullName
+
+    [Console]::Error.WriteLine("Files to hash:")
+    $files | ForEach-Object { [Console]::Error.WriteLine($_.FullName) }
+
+    $combined = ($files | Get-FileHash | Select-Object -ExpandProperty Hash) -join ''
+    $hash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($combined)))).Hash
+
+    [Console]::Error.WriteLine("Calculated hash: $hash")
+    ConvertTo-Json @{ hash = $hash }
+  EOT
+  ]
+}
+
 resource "null_resource" "build_lambda_package" {
   triggers = {
-    # Forzar reconstrucción siempre
-    force_rebuild = uuid()
+    source_hash = data.external.source_hash.result.hash
   }
 
   provisioner "local-exec" {
@@ -94,13 +116,13 @@ resource "null_resource" "build_lambda_package" {
 }
 
 resource "time_sleep" "wait_for_lambda_package" {
-  depends_on = [null_resource.build_lambda_package]
-  create_duration = "15s"  # Incrementado para dar más tiempo
+  depends_on      = [null_resource.build_lambda_package]
+  create_duration = "15s" # Incrementado para dar más tiempo
 }
 
 # VOLVER AL NOMBRE ORIGINAL
 resource "aws_lambda_function" "api" {
-  function_name = var.function_name  # Nombre original sin timestamp
+  function_name = var.function_name # Nombre original sin timestamp
   role          = aws_iam_role.lambda_role.arn
   handler       = "index.handler"
   runtime       = "nodejs18.x"
@@ -112,60 +134,55 @@ resource "aws_lambda_function" "api" {
 
   # Siempre crear nueva versión
   publish = true
-  
+
   environment {
     variables = merge(var.environment_variables, {
-      DEBUG = "true",
-      LOG_LEVEL = "verbose",
-      FORCE_UPDATE = uuid()  # Forzar actualización
+      DEBUG     = var.debug,
+      LOG_LEVEL = var.log_level,
     })
   }
 
   depends_on = [
     time_sleep.wait_for_lambda_package,
-    aws_cloudwatch_log_group.lambda_logs  # Asegura que el grupo de logs existe antes de la función
+    aws_cloudwatch_log_group.lambda_logs # Asegura que el grupo de logs existe antes de la función
   ]
 }
 
 # API Gateway - CORS simplificado
 resource "aws_apigatewayv2_api" "lambda" {
-  name          = "${var.function_name}-api"  # Nombre original 
+  name          = "${var.function_name}-api" # Nombre original 
   protocol_type = "HTTP"
-  
-  # Configurar CORS simple pero completo
+
   cors_configuration {
-    allow_origins = [
-      "*"  # Para pruebas, permitir todos los orígenes
-    ]
-    allow_methods = ["*"]  # Todos los métodos
-    allow_headers = ["*"]  # Todos los headers
-    expose_headers = ["*"]  # Exponer todos los headers
-    max_age      = 86400
-    # Sin allow_credentials para evitar conflictos con wildcard
+    allow_origins  = ["https://ultravioletadao.xyz", "https://www.ultravioletadao.xyz"]
+    allow_methods  = ["GET", "POST", "OPTIONS"]
+    allow_headers  = ["Content-Type", "Authorization", "Accept", "Origin"]
+    expose_headers = []
+    max_age        = 86400
   }
 }
 
 resource "aws_apigatewayv2_stage" "lambda" {
-  api_id = aws_apigatewayv2_api.lambda.id
-  name   = "prod"
+  api_id      = aws_apigatewayv2_api.lambda.id
+  name        = "prod"
   auto_deploy = true
-  
+
   # Logs simplificados
   default_route_settings {
     detailed_metrics_enabled = true
-    logging_level           = "INFO"
-    throttling_burst_limit  = 5000
-    throttling_rate_limit   = 10000
+    logging_level            = "INFO"
+    throttling_burst_limit   = 5000
+    throttling_rate_limit    = 10000
   }
-  
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_gateway_logs.arn
-    format          = jsonencode({
-      requestId      = "$context.requestId"
-      ip             = "$context.identity.sourceIp"
-      httpMethod     = "$context.httpMethod"
-      path           = "$context.path"
-      status         = "$context.status"
+    format = jsonencode({
+      requestId  = "$context.requestId"
+      ip         = "$context.identity.sourceIp"
+      httpMethod = "$context.httpMethod"
+      path       = "$context.path"
+      status     = "$context.status"
     })
   }
 }
@@ -173,29 +190,29 @@ resource "aws_apigatewayv2_stage" "lambda" {
 resource "aws_apigatewayv2_integration" "lambda" {
   api_id = aws_apigatewayv2_api.lambda.id
 
-  integration_uri    = aws_lambda_function.api.invoke_arn
-  integration_type   = "AWS_PROXY"
-  integration_method = "POST"
-  payload_format_version = "2.0"  # Usar el formato de payload más nuevo
+  integration_uri        = aws_lambda_function.api.invoke_arn
+  integration_type       = "AWS_PROXY"
+  integration_method     = "POST"
+  payload_format_version = "2.0" # Usar el formato de payload más nuevo
 }
 
 # Agregar ruta raíz explícita
 resource "aws_apigatewayv2_route" "root" {
-  api_id = aws_apigatewayv2_api.lambda.id
+  api_id    = aws_apigatewayv2_api.lambda.id
   route_key = "ANY /"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
 # Agregar ruta /apply explícita
 resource "aws_apigatewayv2_route" "apply" {
-  api_id = aws_apigatewayv2_api.lambda.id
+  api_id    = aws_apigatewayv2_api.lambda.id
   route_key = "ANY /apply"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
 # Ruta comodín para el resto
 resource "aws_apigatewayv2_route" "lambda" {
-  api_id = aws_apigatewayv2_api.lambda.id
+  api_id    = aws_apigatewayv2_api.lambda.id
   route_key = "ANY /{proxy+}"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
@@ -210,7 +227,7 @@ resource "aws_lambda_permission" "apigw" {
 
 # VOLVER AL GRUPO DE LOGS ORIGINAL 
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/${var.function_name}"  # Nombre original
+  name              = "/aws/lambda/${var.function_name}" # Nombre original
   retention_in_days = 14
 }
 

@@ -1,6 +1,6 @@
 resource "aws_s3_bucket" "artifacts" {
-  bucket = var.artifacts_bucket_name
-  force_destroy = true  # Permitir borrar el bucket con contenido
+  bucket        = var.artifacts_bucket_name
+  force_destroy = true # Permitir borrar el bucket con contenido
 }
 
 resource "aws_s3_bucket_versioning" "artifacts" {
@@ -55,7 +55,7 @@ resource "null_resource" "build_artifact" {
   }
 
   provisioner "local-exec" {
-    command = <<EOT
+    command     = <<EOT
       $ErrorActionPreference = 'Stop'
       Set-Location "${var.source_dir}"
       
@@ -78,7 +78,7 @@ resource "null_resource" "build_artifact" {
 
 # Esperar después del build
 resource "time_sleep" "wait_for_artifact" {
-  depends_on = [null_resource.build_artifact]
+  depends_on      = [null_resource.build_artifact]
   create_duration = "15s"
 
   triggers = {
