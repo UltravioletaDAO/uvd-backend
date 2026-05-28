@@ -83,3 +83,7 @@ services/common/layer.zip
 
 # Environment
 .env 
+# Artefactos / build outputs / backups
+**/coverage/
+layers/
+*.bak

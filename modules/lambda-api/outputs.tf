@@ -18,5 +18,15 @@ output "api_domain" {
   value       = "api.ultravioletadao.xyz"
 }
 
+output "api_id" {
+  description = "ID del API Gateway"
+  value       = aws_apigatewayv2_api.lambda.id
+}
+
+output "api_execution_arn" {
+  description = "ARN de ejecución del API Gateway (para permisos de Lambda)"
+  value       = aws_apigatewayv2_api.lambda.execution_arn
+}
+
 # Obtener la región actual
 data "aws_region" "current" {} 
