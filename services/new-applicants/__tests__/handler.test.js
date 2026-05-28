@@ -29,7 +29,14 @@ jest.mock('mongodb', () => ({
       collection: jest.fn().mockReturnValue({
         findOne: findOneMock,
         insertOne: insertOneMock,
-        find: jest.fn().mockReturnValue({ toArray: toArrayMock }),
+        // Cursor encadenable: el handler usa find({}).skip(skip).limit(50).toArray()
+        // tras el fix de paginacion. mockReturnThis hace que skip/limit retornen el
+        // mismo cursor, asi cualquier orden de chain funciona.
+        find: jest.fn().mockReturnValue({
+          skip: jest.fn().mockReturnThis(),
+          limit: jest.fn().mockReturnThis(),
+          toArray: toArrayMock,
+        }),
       }),
     }),
   })),
