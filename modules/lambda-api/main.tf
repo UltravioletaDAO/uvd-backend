@@ -154,7 +154,7 @@ resource "aws_apigatewayv2_api" "lambda" {
   protocol_type = "HTTP"
 
   cors_configuration {
-    allow_origins  = ["https://ultravioletadao.xyz", "https://www.ultravioletadao.xyz"]
+    allow_origins  = ["https://ultravioletadao.xyz", "https://www.ultravioletadao.xyz", "https://dev.ultravioletadao.xyz", "http://localhost:3000"]
     allow_methods  = ["GET", "POST", "OPTIONS"]
     allow_headers  = ["Content-Type", "Authorization", "Accept", "Origin"]
     expose_headers = []
