@@ -125,7 +125,7 @@ resource "aws_lambda_function" "api" {
   function_name = var.function_name # Nombre original sin timestamp
   role          = aws_iam_role.lambda_role.arn
   handler       = "index.handler"
-  runtime       = "nodejs18.x"
+  runtime       = "nodejs20.x"
   memory_size   = 256
   timeout       = 30
 

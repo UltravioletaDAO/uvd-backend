@@ -35,7 +35,7 @@ La arquitectura está diseñada para ser completamente serverless, lo que permit
 1. **AWS Lambda**
    - Servicio: Computación serverless
    - Uso: Ejecuta el código de la API sin necesidad de servidores
-   - Configuración: Runtime Node.js 18.x, 256MB de memoria, timeout de 30 segundos
+   - Configuración: Runtime Node.js 20.x, 256MB de memoria, timeout de 30 segundos
    - Ventajas: Escalado automático, pago por uso, sin mantenimiento de servidores
 
 2. **Amazon API Gateway**
