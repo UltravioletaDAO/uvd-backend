@@ -70,6 +70,30 @@ describe('GET /test', () => {
   });
 });
 
+describe('GET /health', () => {
+  it('responde 200 con status/service/version/timestamp', async () => {
+    const res = await handler(event('GET', '/health'), mockContext);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('application/json');
+    const body = JSON.parse(res.body);
+    expect(body.status).toBe('ok');
+    expect(body.service).toBe('ultravioleta-api');
+    expect(typeof body.version).toBe('string');
+    expect(new Date(body.timestamp).toString()).not.toBe('Invalid Date');
+  });
+
+  it('acepta el prefijo de stage /prod/health', async () => {
+    const res = await handler(event('GET', '/prod/health'), mockContext);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('ok');
+  });
+
+  it('POST /health no existe (404)', async () => {
+    const res = await handler(event('POST', '/health'), mockContext);
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe('POST /apply', () => {
   it('rechaza email inválido con 400', async () => {
     const res = await handler(event('POST', '/apply', { email: 'no-es-email', name: 'Test' }), mockContext);

@@ -6,6 +6,7 @@ const { MongoClient } = require('mongodb');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const validator = require('validator');
 const sanitize = require('mongo-sanitize');
+const { name: SERVICE_NAME, version: SERVICE_VERSION } = require('./package.json');
 
 // Función para normalizar la ruta (eliminar prefijo /prod si existe)
 const normalizePath = (path) => {
@@ -280,6 +281,26 @@ exports.handler = async (event, context) => {
       }
     }
 
+    // Ruta /health - Health check para api-catalog y agentes (llega aquí solo si la DB respondió al ping)
+    if ((normalizedPath === '/health' || normalizedPath === 'health') && method === 'GET') {
+      console.log("[ROUTE_MATCH] Ruta /health coincide");
+      const response = {
+        statusCode: 200,
+        body: JSON.stringify({
+          status: 'ok',
+          service: SERVICE_NAME,
+          version: SERVICE_VERSION,
+          timestamp: new Date().toISOString()
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      };
+      console.log(`[LAMBDA_RESULT_EXPLICIT] Respuesta: \nStatus ${response.statusCode}\nBody: ${response.body}`);
+      return response;
+    }
+
     // Ruta /test - Para verificar que el API funciona
     if ((normalizedPath === '/test' || normalizedPath === 'test' || normalizedPath === '/') && (method === 'GET' || method === 'POST')) {
       console.log("[ROUTE_MATCH] Ruta /test o / coincide");
@@ -311,6 +332,11 @@ exports.handler = async (event, context) => {
               path: '/test',
               method: 'GET',
               description: 'Verificar que la API está funcionando'
+            },
+            {
+              path: '/health',
+              method: 'GET',
+              description: 'Health check (status, service, version, timestamp)'
             }
           ]
         }),
@@ -513,7 +539,7 @@ exports.handler = async (event, context) => {
         error: 'Ruta no encontrada',
         path: path,
         normalizedPath: normalizedPath,
-        availableRoutes: ['/apply', '/test', '/']
+        availableRoutes: ['/apply', '/test', '/health', '/']
       }),
       headers: {
         'Content-Type': 'application/json',
