@@ -125,7 +125,7 @@ resource "aws_lambda_function" "api" {
   function_name = var.function_name # Nombre original sin timestamp
   role          = aws_iam_role.lambda_role.arn
   handler       = "index.handler"
-  runtime       = "nodejs20.x"
+  runtime       = "nodejs22.x"
   memory_size   = 256
   timeout       = 30
 
@@ -170,7 +170,6 @@ resource "aws_apigatewayv2_stage" "lambda" {
   # Logs simplificados
   default_route_settings {
     detailed_metrics_enabled = true
-    logging_level            = "INFO"
     throttling_burst_limit   = 5000
     throttling_rate_limit    = 10000
   }
