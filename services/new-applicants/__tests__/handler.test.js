@@ -197,10 +197,12 @@ describe('POST /wallets', () => {
 });
 
 describe('GET /wallets', () => {
-  it('responde 200 con el listado', async () => {
+  it('ya no existe: responde 404 sin tocar la DB (listado público retirado)', async () => {
+    toArrayMock.mockClear();
     const res = await handler(event('GET', '/wallets'), mockContext);
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toHaveProperty('count');
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).not.toHaveProperty('wallets');
+    expect(toArrayMock).not.toHaveBeenCalled();
   });
 });
 

@@ -406,11 +406,6 @@ exports.handler = async (event, context) => {
               description: 'Registrar wallet de usuario'
             },
             {
-              path: '/wallets',
-              method: 'GET',
-              description: 'Obtener wallets de usuarios'
-            },
-            {
               path: '/test',
               method: 'GET',
               description: 'Verificar que la API está funcionando'
@@ -431,51 +426,10 @@ exports.handler = async (event, context) => {
       return response;
     }
 
-    // Ruta /wallets - Registrar wallet de usuario
+    // Ruta /wallets - Registrar wallet de usuario (solo POST; el GET público sin auth se retiró)
     if ((normalizedPath === '/wallets' || normalizedPath === 'wallets' || path === '/wallets' || path === '/prod/wallets')) {
       console.log("[ROUTE_MATCH] Ruta /wallets coincide");
-      
-      // GET /wallets - Obtener usuarios y wallets con paginación defensiva
-      if (method === 'GET') {
-        try {
-          const db = dbClient.db();
-          const collection = db.collection('wallets');
 
-          const PAGE_SIZE = 50;
-          const queryParams = event.queryStringParameters || {};
-          const page = Math.max(0, parseInt(queryParams.page || '0', 10) || 0);
-          const skip = page * PAGE_SIZE;
-
-          console.log(`[DB_OPERATION] Obteniendo wallets - page=${page}, skip=${skip}, limit=${PAGE_SIZE}`);
-          const wallets = await collection.find({}).skip(skip).limit(PAGE_SIZE).toArray();
-
-          return {
-            statusCode: 200,
-            body: JSON.stringify({
-              message: 'Wallets obtenidas correctamente',
-              count: wallets.length,
-              page: page,
-              pageSize: PAGE_SIZE,
-              wallets: wallets
-            }),
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
-          };
-        } catch (error) {
-          console.error(`[DB_ERROR] Error al obtener wallets: ${error.message}`);
-          return {
-            statusCode: 500,
-            body: JSON.stringify({ error: 'Error al obtener las wallets' }),
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
-          };
-        }
-      }
-      
       // POST /wallets - Registrar wallet de usuario
       if (method === 'POST') {
         try {
