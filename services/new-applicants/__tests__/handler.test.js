@@ -70,6 +70,30 @@ describe('GET /test', () => {
   });
 });
 
+describe('GET /health', () => {
+  it('responde 200 con status/service/version/timestamp', async () => {
+    const res = await handler(event('GET', '/health'), mockContext);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['Content-Type']).toBe('application/json');
+    const body = JSON.parse(res.body);
+    expect(body.status).toBe('ok');
+    expect(body.service).toBe('ultravioleta-api');
+    expect(typeof body.version).toBe('string');
+    expect(new Date(body.timestamp).toString()).not.toBe('Invalid Date');
+  });
+
+  it('acepta el prefijo de stage /prod/health', async () => {
+    const res = await handler(event('GET', '/prod/health'), mockContext);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('ok');
+  });
+
+  it('POST /health no existe (404)', async () => {
+    const res = await handler(event('POST', '/health'), mockContext);
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe('POST /apply', () => {
   it('rechaza email inválido con 400', async () => {
     const res = await handler(event('POST', '/apply', { email: 'no-es-email', name: 'Test' }), mockContext);
@@ -94,6 +118,64 @@ describe('POST /apply', () => {
   });
 });
 
+describe('GET /apply/status/:email', () => {
+  it('devuelve 200 con {data:{status, createdAt, updatedAt}} y sin datos personales', async () => {
+    const createdAt = new Date('2026-08-01T10:00:00.000Z');
+    findOneMock.mockResolvedValueOnce({
+      _id: 'x', email: 'Ana@Example.com', name: 'Ana', twitter: '@ana',
+      status: 'review', createdAt,
+    });
+    const res = await handler(event('GET', '/apply/status/ana@example.com'), mockContext);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.data.status).toBe('review');
+    expect(body.data.createdAt).toBe(createdAt.toISOString());
+    expect(body.data.updatedAt).toBe(createdAt.toISOString()); // sin updatedAt cae a createdAt
+    expect(body.data).not.toHaveProperty('email');
+    expect(body.data).not.toHaveProperty('name');
+    expect(body.data).not.toHaveProperty('twitter');
+    expect(body.data).not.toHaveProperty('_id');
+  });
+
+  it('busca por email case-insensitive (collation strength 2) y la más reciente', async () => {
+    findOneMock.mockResolvedValueOnce({ status: 'pending', createdAt: new Date() });
+    await handler(event('GET', '/apply/status/ANA%40Example.com'), mockContext);
+    expect(findOneMock).toHaveBeenLastCalledWith(
+      { email: 'ANA@Example.com' },
+      expect.objectContaining({
+        collation: { locale: 'en', strength: 2 },
+        sort: { createdAt: -1 },
+      })
+    );
+  });
+
+  it('responde 404 JSON si no existe', async () => {
+    const res = await handler(event('GET', '/apply/status/noexiste@example.com'), mockContext);
+    expect(res.statusCode).toBe(404);
+    expect(res.headers['Content-Type']).toBe('application/json');
+    expect(JSON.parse(res.body).error).toBeDefined();
+  });
+
+  it('rechaza email inválido con 400', async () => {
+    findOneMock.mockClear();
+    const res = await handler(event('GET', '/apply/status/no-es-email'), mockContext);
+    expect(res.statusCode).toBe(400);
+    expect(findOneMock).not.toHaveBeenCalled();
+  });
+
+  it('rechaza email vacío con 400', async () => {
+    const res = await handler(event('GET', '/apply/status/'), mockContext);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('acepta el prefijo de stage /prod/apply/status/:email', async () => {
+    findOneMock.mockResolvedValueOnce({ status: 'approved', createdAt: new Date() });
+    const res = await handler(event('GET', '/prod/apply/status/ana@example.com'), mockContext);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.status).toBe('approved');
+  });
+});
+
 describe('POST /wallets', () => {
   it('exige username y wallet (400 si falta)', async () => {
     const res = await handler(event('POST', '/wallets', { username: 'u' }), mockContext);
@@ -115,10 +197,12 @@ describe('POST /wallets', () => {
 });
 
 describe('GET /wallets', () => {
-  it('responde 200 con el listado', async () => {
+  it('ya no existe: responde 404 sin tocar la DB (listado público retirado)', async () => {
+    toArrayMock.mockClear();
     const res = await handler(event('GET', '/wallets'), mockContext);
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toHaveProperty('count');
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).not.toHaveProperty('wallets');
+    expect(toArrayMock).not.toHaveBeenCalled();
   });
 });
 

@@ -6,6 +6,7 @@ const { MongoClient } = require('mongodb');
 const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
 const validator = require('validator');
 const sanitize = require('mongo-sanitize');
+const { name: SERVICE_NAME, version: SERVICE_VERSION } = require('./package.json');
 
 // Función para normalizar la ruta (eliminar prefijo /prod si existe)
 const normalizePath = (path) => {
@@ -189,6 +190,83 @@ exports.handler = async (event, context) => {
       return response;
     }
     
+    // Ruta /apply/status/:email - Consultar estado de una aplicación (lo usa /status en el frontend)
+    const statusPrefix = '/apply/status/';
+    if (normalizedPath.startsWith(statusPrefix) && method === 'GET') {
+      console.log("[ROUTE_MATCH] Ruta /apply/status/:email coincide");
+      try {
+        let email = '';
+        try {
+          email = decodeURIComponent(normalizedPath.substring(statusPrefix.length)).trim();
+        } catch (e) {
+          email = '';
+        }
+
+        if (!email || !validator.isEmail(email)) {
+          return {
+            statusCode: 400,
+            body: JSON.stringify({ error: 'Email inválido o no proporcionado' }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
+        }
+
+        const db = dbClient.db();
+        const collection = db.collection('applicants');
+
+        // Case-insensitive vía collation (sin regex construido desde input); la aplicación más reciente
+        const application = await collection.findOne(
+          { email: email },
+          {
+            collation: { locale: 'en', strength: 2 },
+            sort: { createdAt: -1 },
+            projection: { status: 1, createdAt: 1, updatedAt: 1 }
+          }
+        );
+
+        if (!application) {
+          return {
+            statusCode: 404,
+            body: JSON.stringify({ error: 'No se encontró una aplicación con ese email' }),
+            headers: {
+              'Content-Type': 'application/json',
+              'Access-Control-Allow-Origin': '*'
+            }
+          };
+        }
+
+        // Solo status y fechas: nada personal
+        const response = {
+          statusCode: 200,
+          body: JSON.stringify({
+            data: {
+              status: application.status || 'pending',
+              createdAt: application.createdAt,
+              updatedAt: application.updatedAt || application.createdAt
+            }
+          }),
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          }
+        };
+        console.log(`[LAMBDA_RESULT_EXPLICIT] Respuesta: \nStatus ${response.statusCode}\nBody: ${response.body}`);
+        return response;
+      } catch (error) {
+        console.error(`[DB_ERROR] Error al consultar estado de aplicación: ${error.message}`);
+        return {
+          statusCode: 500,
+          body: JSON.stringify({ error: 'Error al procesar la solicitud' }),
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*'
+          }
+        };
+      }
+    }
+
     // Verificar si la ruta es /apply o /prod/apply (sin normalizar)
     if ((normalizedPath === '/apply' || normalizedPath === 'apply' || path === '/apply' || path === '/prod/apply') && method === 'POST') {
       console.log("[ROUTE_MATCH] Ruta /apply coincide");
@@ -280,6 +358,26 @@ exports.handler = async (event, context) => {
       }
     }
 
+    // Ruta /health - Health check para api-catalog y agentes (llega aquí solo si la DB respondió al ping)
+    if ((normalizedPath === '/health' || normalizedPath === 'health') && method === 'GET') {
+      console.log("[ROUTE_MATCH] Ruta /health coincide");
+      const response = {
+        statusCode: 200,
+        body: JSON.stringify({
+          status: 'ok',
+          service: SERVICE_NAME,
+          version: SERVICE_VERSION,
+          timestamp: new Date().toISOString()
+        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*'
+        }
+      };
+      console.log(`[LAMBDA_RESULT_EXPLICIT] Respuesta: \nStatus ${response.statusCode}\nBody: ${response.body}`);
+      return response;
+    }
+
     // Ruta /test - Para verificar que el API funciona
     if ((normalizedPath === '/test' || normalizedPath === 'test' || normalizedPath === '/') && (method === 'GET' || method === 'POST')) {
       console.log("[ROUTE_MATCH] Ruta /test o / coincide");
@@ -298,19 +396,24 @@ exports.handler = async (event, context) => {
               description: 'Enviar una nueva aplicación'
             },
             {
+              path: '/apply/status/{email}',
+              method: 'GET',
+              description: 'Consultar el estado de una aplicación (solo status y fechas)'
+            },
+            {
               path: '/wallets',
               method: 'POST',
               description: 'Registrar wallet de usuario'
             },
             {
-              path: '/wallets',
-              method: 'GET',
-              description: 'Obtener wallets de usuarios'
-            },
-            {
               path: '/test',
               method: 'GET',
               description: 'Verificar que la API está funcionando'
+            },
+            {
+              path: '/health',
+              method: 'GET',
+              description: 'Health check (status, service, version, timestamp)'
             }
           ]
         }),
@@ -323,51 +426,10 @@ exports.handler = async (event, context) => {
       return response;
     }
 
-    // Ruta /wallets - Registrar wallet de usuario
+    // Ruta /wallets - Registrar wallet de usuario (solo POST; el GET público sin auth se retiró)
     if ((normalizedPath === '/wallets' || normalizedPath === 'wallets' || path === '/wallets' || path === '/prod/wallets')) {
       console.log("[ROUTE_MATCH] Ruta /wallets coincide");
-      
-      // GET /wallets - Obtener usuarios y wallets con paginación defensiva
-      if (method === 'GET') {
-        try {
-          const db = dbClient.db();
-          const collection = db.collection('wallets');
 
-          const PAGE_SIZE = 50;
-          const queryParams = event.queryStringParameters || {};
-          const page = Math.max(0, parseInt(queryParams.page || '0', 10) || 0);
-          const skip = page * PAGE_SIZE;
-
-          console.log(`[DB_OPERATION] Obteniendo wallets - page=${page}, skip=${skip}, limit=${PAGE_SIZE}`);
-          const wallets = await collection.find({}).skip(skip).limit(PAGE_SIZE).toArray();
-
-          return {
-            statusCode: 200,
-            body: JSON.stringify({
-              message: 'Wallets obtenidas correctamente',
-              count: wallets.length,
-              page: page,
-              pageSize: PAGE_SIZE,
-              wallets: wallets
-            }),
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
-          };
-        } catch (error) {
-          console.error(`[DB_ERROR] Error al obtener wallets: ${error.message}`);
-          return {
-            statusCode: 500,
-            body: JSON.stringify({ error: 'Error al obtener las wallets' }),
-            headers: {
-              'Content-Type': 'application/json',
-              'Access-Control-Allow-Origin': '*'
-            }
-          };
-        }
-      }
-      
       // POST /wallets - Registrar wallet de usuario
       if (method === 'POST') {
         try {
@@ -513,7 +575,7 @@ exports.handler = async (event, context) => {
         error: 'Ruta no encontrada',
         path: path,
         normalizedPath: normalizedPath,
-        availableRoutes: ['/apply', '/test', '/']
+        availableRoutes: ['/apply', '/apply/status/{email}', '/test', '/health', '/']
       }),
       headers: {
         'Content-Type': 'application/json',
