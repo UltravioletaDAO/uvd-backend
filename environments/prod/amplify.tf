@@ -89,6 +89,29 @@ frontend:
     status = "200"
   }
 
+  # Ecosystem (audit 2026-08-27, ola 3 polish): /agents y /agent-discovery se fusionaron en
+  # /ecosystem. 301 en el edge (antes solo <Navigate> client-side, que a bots/curl les daba 200
+  # con index.html). Van ANTES de las reglas SPA porque Amplify corta en la primera que matchea.
+  custom_rule {
+    source = "/agents"
+    target = "/ecosystem"
+    status = "301"
+  }
+
+  custom_rule {
+    source = "/agent-discovery"
+    target = "/ecosystem"
+    status = "301"
+  }
+
+  # public/ecosystem/ existe como directorio de estáticos (graph.json, posters/): sin esta regla
+  # el hosting puede responder 301 /ecosystem -> /ecosystem/ en vez de la SPA. Rewrite explícito.
+  custom_rule {
+    source = "/ecosystem"
+    target = "/index.html"
+    status = "200"
+  }
+
   custom_rule {
     source = "/<*>"
     target = "/index.html"
