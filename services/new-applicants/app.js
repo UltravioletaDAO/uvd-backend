@@ -8,6 +8,80 @@ const validator = require('validator');
 const sanitize = require('mongo-sanitize');
 const { name: SERVICE_NAME, version: SERVICE_VERSION } = require('./package.json');
 
+// ── Ruleta /wallets: auth del streamer + hygiene de logs (audit 2026-08-27, W-08/W-09) ──
+// Solo un token de Twitch (implicit flow del SPA) cuyo `login` esté en la allowlist puede
+// registrar/verificar wallets. El token se valida contra Twitch y NUNCA se persiste ni se logea.
+const TWITCH_VALIDATE_URL = 'https://id.twitch.tv/oauth2/validate';
+const WHEEL_BROADCASTER_LOGINS = String(process.env.WHEEL_BROADCASTER_LOGINS || '0xultravioleta')
+  .split(',')
+  .map((l) => l.trim().toLowerCase())
+  .filter(Boolean);
+// Opcional: si está definido, el token además debe haber sido emitido para esta app de Twitch
+const WHEEL_TWITCH_CLIENT_ID = process.env.WHEEL_TWITCH_CLIENT_ID || null;
+const TWITCH_VALIDATION_CACHE_MS = 60 * 1000;
+const twitchTokenCache = new Map(); // token -> { login, expiresAt }
+
+const getHeader = (event, name) => {
+  const headers = event?.headers || {};
+  const wanted = name.toLowerCase();
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === wanted);
+  return key ? headers[key] : undefined;
+};
+
+// Copia del evento sin credenciales para los logs [EVENT_FULL]/[EVENT_DEBUG]
+const redactEvent = (event) => {
+  if (!event || typeof event !== 'object') return event;
+  const headers = event.headers && typeof event.headers === 'object' ? { ...event.headers } : event.headers;
+  if (headers) {
+    Object.keys(headers).forEach((k) => {
+      if (['authorization', 'cookie', 'x-api-key'].includes(k.toLowerCase())) headers[k] = '[REDACTED]';
+    });
+  }
+  return { ...event, headers };
+};
+
+async function validateTwitchBroadcaster(authHeader) {
+  if (!authHeader || !/^Bearer\s+\S+/i.test(String(authHeader))) {
+    return { ok: false, status: 401, error: 'Se requiere Authorization: Bearer <token de Twitch del streamer>' };
+  }
+  const token = String(authHeader).replace(/^Bearer\s+/i, '').trim();
+
+  const cached = twitchTokenCache.get(token);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { ok: true, login: cached.login };
+  }
+
+  let response;
+  try {
+    response = await fetch(TWITCH_VALIDATE_URL, { headers: { Authorization: `OAuth ${token}` } });
+  } catch (error) {
+    console.error(`[TWITCH_VALIDATE_ERROR] ${error.message}`);
+    return { ok: false, status: 503, error: 'No se pudo validar el token con Twitch. Intenta de nuevo' };
+  }
+  if (!response.ok) {
+    return { ok: false, status: 401, error: 'Token de Twitch inválido o expirado' };
+  }
+
+  let data = {};
+  try {
+    data = await response.json();
+  } catch (error) {
+    return { ok: false, status: 401, error: 'Token de Twitch inválido o expirado' };
+  }
+  const login = String(data.login || '').toLowerCase();
+  if (WHEEL_TWITCH_CLIENT_ID && data.client_id !== WHEEL_TWITCH_CLIENT_ID) {
+    return { ok: false, status: 403, error: 'El token no pertenece a la aplicación de la ruleta' };
+  }
+  if (!login || !WHEEL_BROADCASTER_LOGINS.includes(login)) {
+    console.warn(`[TWITCH_VALIDATE_DENIED] login='${login}' no está en la allowlist`);
+    return { ok: false, status: 403, error: 'El token no pertenece a un streamer autorizado' };
+  }
+
+  const ttl = Math.min(TWITCH_VALIDATION_CACHE_MS, Number(data.expires_in || 0) * 1000 || TWITCH_VALIDATION_CACHE_MS);
+  twitchTokenCache.set(token, { login, expiresAt: Date.now() + ttl });
+  return { ok: true, login };
+}
+
 // Función para normalizar la ruta (eliminar prefijo /prod si existe)
 const normalizePath = (path) => {
   console.log(`[PATH_NORMALIZE_DEBUG] Normalizando ruta: '${path}'`);
@@ -158,7 +232,7 @@ exports.handler = async (event, context) => {
 
   try {
     // Extraer información de la solicitud
-    console.log(`[EVENT_FULL] Evento completo: ${JSON.stringify(event)}`);
+    console.log(`[EVENT_FULL] Evento completo: ${JSON.stringify(redactEvent(event))}`);
     
     const path = event.rawPath || event.path || '';
     const normalizedPath = normalizePath(path);
@@ -166,7 +240,7 @@ exports.handler = async (event, context) => {
     
     console.log(`[REQUEST_EXPLICIT] ${method} ${path} \n- ${new Date().toISOString()}`);
     console.log(`[PATH_DEBUG] Original: '${path}', Normalizado: '${normalizedPath}', Método: '${method}'`);
-    console.log(`[EVENT_DEBUG] Estructura del evento: ${JSON.stringify(event, null, 2).substring(0, 500)}...`);
+    console.log(`[EVENT_DEBUG] Estructura del evento: ${JSON.stringify(redactEvent(event), null, 2).substring(0, 500)}...`);
 
     // RUTAS ESPECÍFICAS
     // Ruta /apply - Crear nueva aplicación
@@ -456,6 +530,19 @@ exports.handler = async (event, context) => {
             }
           }
 
+          // Auth del streamer (W-09): sin token válido del canal autorizado no se toca la DB
+          const auth = await validateTwitchBroadcaster(getHeader(event, 'authorization'));
+          if (!auth.ok) {
+            return {
+              statusCode: auth.status,
+              body: JSON.stringify({ error: auth.error }),
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              }
+            };
+          }
+
           // Validar que se proporcionaron los campos requeridos
           if (!body.username || !body.wallet) {
             return {
@@ -468,9 +555,15 @@ exports.handler = async (event, context) => {
             };
           }
 
-          // Validar formato de wallet (dirección de Avalanche C-Chain)
-          const walletRegex = /^0x[a-fA-F0-9]{40}$/;
-          if (!walletRegex.test(body.wallet)) {
+          // Normalización (W-08): username y wallet se comparan y guardan en minúsculas;
+          // twitch_id (opcional) es la clave estable aunque el viewer cambie de nombre.
+          const username = String(body.username).trim().toLowerCase();
+          const wallet = String(body.wallet).trim().toLowerCase();
+          const twitchId = body.twitch_id ? String(body.twitch_id).trim() : null;
+
+          // Validar formato de wallet (dirección EVM, ya en minúsculas)
+          const walletRegex = /^0x[a-f0-9]{40}$/;
+          if (!walletRegex.test(wallet)) {
             return {
               statusCode: 400,
               body: JSON.stringify({ error: 'Formato de wallet inválido' }),
@@ -481,19 +574,23 @@ exports.handler = async (event, context) => {
             };
           }
 
-          // Buscar si el usuario ya existe
-          const existingUser = await collection.findOne({ username: body.username });
-          
-          // Buscar si la wallet ya está registrada para otro usuario
-          const existingWallet = await collection.findOne({ 
-            wallet: body.wallet,
-            username: { $ne: body.username }
-          });
+          // Registros viejos pueden tener mayúsculas: comparar sin distinguir casing
+          const caseInsensitive = { collation: { locale: 'en', strength: 2 } };
+
+          // Buscar si el usuario ya existe: primero por twitch_id (estable), luego por username
+          let existingUser = twitchId ? await collection.findOne({ twitch_id: twitchId }) : null;
+          if (!existingUser) {
+            existingUser = await collection.findOne({ username }, caseInsensitive);
+          }
+
+          // Buscar si la wallet ya está registrada para OTRO usuario
+          const walletFilter = existingUser ? { wallet, _id: { $ne: existingUser._id } } : { wallet };
+          const existingWallet = await collection.findOne(walletFilter, caseInsensitive);
 
           if (existingWallet) {
             return {
               statusCode: 400,
-              body: JSON.stringify({ 
+              body: JSON.stringify({
                 error: 'Abre un ticket en discord para soporte',
                 details: 'Wallet ya registrada para otro usuario'
               }),
@@ -505,11 +602,19 @@ exports.handler = async (event, context) => {
           }
 
           if (existingUser) {
-            // Si el usuario existe, verificar si la wallet coincide
-            if (existingUser.wallet === body.wallet) {
+            // Si el usuario existe, verificar si la wallet coincide (sin distinguir casing)
+            if (String(existingUser.wallet || '').toLowerCase() === wallet) {
+              // Backfill de la clave estable si el registro viejo no la tenía
+              if (twitchId && !existingUser.twitch_id) {
+                try {
+                  await collection.updateOne({ _id: existingUser._id }, { $set: { twitch_id: twitchId } });
+                } catch (error) {
+                  console.warn(`[WALLETS_BACKFILL_WARN] No se pudo guardar twitch_id: ${error.message}`);
+                }
+              }
               return {
                 statusCode: 200,
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                   message: 'OK',
                   details: 'Usuario y wallet ya registrados'
                 }),
@@ -521,7 +626,7 @@ exports.handler = async (event, context) => {
             } else {
               return {
                 statusCode: 400,
-                body: JSON.stringify({ 
+                body: JSON.stringify({
                   error: 'Abre un ticket en discord para soporte',
                   details: 'Wallet no coincide con el registro existente'
                 }),
@@ -534,12 +639,14 @@ exports.handler = async (event, context) => {
           }
 
           // Si llegamos aquí, el usuario no existe y la wallet no está registrada
-          // Insertar nuevo registro
-          const result = await collection.insertOne({
-            username: body.username,
-            wallet: body.wallet,
+          // Insertar nuevo registro (normalizado)
+          const newWalletDoc = {
+            username,
+            wallet,
             createdAt: new Date()
-          });
+          };
+          if (twitchId) newWalletDoc.twitch_id = twitchId;
+          const result = await collection.insertOne(newWalletDoc);
 
           return {
             statusCode: 201,

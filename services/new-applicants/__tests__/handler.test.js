@@ -19,6 +19,7 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 // métodos que usa el handler. findOne→null deja pasar /apply al insert.
 const insertOneMock = jest.fn().mockResolvedValue({ insertedId: 'test-id-123' });
 const findOneMock = jest.fn().mockResolvedValue(null);
+const updateOneMock = jest.fn().mockResolvedValue({ modifiedCount: 1 });
 const toArrayMock = jest.fn().mockResolvedValue([]);
 
 jest.mock('mongodb', () => ({
@@ -29,6 +30,7 @@ jest.mock('mongodb', () => ({
       collection: jest.fn().mockReturnValue({
         findOne: findOneMock,
         insertOne: insertOneMock,
+        updateOne: updateOneMock,
         // Cursor encadenable: el handler usa find({}).skip(skip).limit(50).toArray()
         // tras el fix de paginacion. mockReturnThis hace que skip/limit retornen el
         // mismo cursor, asi cualquier orden de chain funciona.
@@ -45,16 +47,26 @@ jest.mock('mongodb', () => ({
 const { handler } = require('../app');
 const mockContext = { awsRequestId: 'test-request-id' };
 
-const event = (method, rawPath, body) => ({
+const event = (method, rawPath, body, headers) => ({
   rawPath,
   requestContext: { http: { method } },
+  ...(headers ? { headers } : {}),
   ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
 });
+
+// ── Mock de https://id.twitch.tv/oauth2/validate (POST /wallets exige token del streamer) ──
+const twitchValidateOk = (login = '0xultravioleta') =>
+  Promise.resolve({ ok: true, json: () => Promise.resolve({ login, client_id: 'cid', expires_in: 3600 }) });
+const STREAMER = { authorization: 'Bearer streamer-token' };
 
 beforeEach(() => {
   findOneMock.mockResolvedValue(null);
   insertOneMock.mockResolvedValue({ insertedId: 'test-id-123' });
   toArrayMock.mockResolvedValue([]);
+  updateOneMock.mockClear();
+  // Cada test usa un token distinto para no pegarle al cache de validación del handler
+  STREAMER.authorization = `Bearer streamer-token-${Date.now()}-${Math.random()}`;
+  global.fetch = jest.fn().mockImplementation(() => twitchValidateOk());
 });
 
 describe('GET /test', () => {
@@ -177,22 +189,76 @@ describe('GET /apply/status/:email', () => {
 });
 
 describe('POST /wallets', () => {
+  it('sin Authorization responde 401 y no toca la DB (W-09)', async () => {
+    findOneMock.mockClear();
+    const res = await handler(event('POST', '/wallets', { username: 'u', wallet: '0x' + 'a'.repeat(40) }), mockContext);
+    expect(res.statusCode).toBe(401);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(findOneMock).not.toHaveBeenCalled();
+  });
+
+  it('token de otro canal responde 403 (W-09)', async () => {
+    global.fetch = jest.fn().mockImplementation(() => twitchValidateOk('otro_streamer'));
+    const res = await handler(
+      event('POST', '/wallets', { username: 'u', wallet: '0x' + 'a'.repeat(40) }, STREAMER),
+      mockContext
+    );
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('token inválido en Twitch responde 401 (W-09)', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 401, json: () => Promise.resolve({}) });
+    const res = await handler(
+      event('POST', '/wallets', { username: 'u', wallet: '0x' + 'a'.repeat(40) }, STREAMER),
+      mockContext
+    );
+    expect(res.statusCode).toBe(401);
+  });
+
   it('exige username y wallet (400 si falta)', async () => {
-    const res = await handler(event('POST', '/wallets', { username: 'u' }), mockContext);
+    const res = await handler(event('POST', '/wallets', { username: 'u' }, STREAMER), mockContext);
     expect(res.statusCode).toBe(400);
   });
 
   it('valida formato de wallet (400 si inválido)', async () => {
-    const res = await handler(event('POST', '/wallets', { username: 'u', wallet: 'no-wallet' }), mockContext);
+    const res = await handler(event('POST', '/wallets', { username: 'u', wallet: 'no-wallet' }, STREAMER), mockContext);
     expect(res.statusCode).toBe(400);
   });
 
-  it('registra wallet válida con 201', async () => {
+  it('registra wallet válida con 201, normalizada en minúsculas y con twitch_id (W-08)', async () => {
     const res = await handler(
-      event('POST', '/wallets', { username: 'u', wallet: '0x' + 'a'.repeat(40) }),
+      event('POST', '/wallets', { username: 'Viewer_X', wallet: '0x' + 'A'.repeat(40), twitch_id: '123' }, STREAMER),
       mockContext
     );
     expect(res.statusCode).toBe(201);
+    expect(insertOneMock).toHaveBeenCalledWith(
+      expect.objectContaining({ username: 'viewer_x', wallet: '0x' + 'a'.repeat(40), twitch_id: '123' })
+    );
+  });
+
+  it('usuario existente con la misma wallet en otro casing responde 200 (W-08)', async () => {
+    findOneMock.mockImplementation((filter) =>
+      Promise.resolve(filter.username ? { _id: 'id-1', username: 'Viewer_X', wallet: '0x' + 'A'.repeat(40) } : null)
+    );
+    const res = await handler(
+      event('POST', '/wallets', { username: 'viewer_x', wallet: '0x' + 'a'.repeat(40), twitch_id: '123' }, STREAMER),
+      mockContext
+    );
+    expect(res.statusCode).toBe(200);
+    // backfill de la clave estable
+    expect(updateOneMock).toHaveBeenCalledWith({ _id: 'id-1' }, { $set: { twitch_id: '123' } });
+  });
+
+  it('usuario existente con otra wallet responde 400 (Wallet no coincide)', async () => {
+    findOneMock.mockImplementation((filter) =>
+      Promise.resolve(filter.username ? { _id: 'id-1', username: 'viewer_x', wallet: '0x' + 'b'.repeat(40) } : null)
+    );
+    const res = await handler(
+      event('POST', '/wallets', { username: 'viewer_x', wallet: '0x' + 'a'.repeat(40) }, STREAMER),
+      mockContext
+    );
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).details).toMatch(/no coincide/);
   });
 });
 
