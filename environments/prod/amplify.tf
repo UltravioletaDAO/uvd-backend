@@ -96,7 +96,7 @@ frontend:
   }
 
   custom_rule {
-    source = "</^[^.]+$|\\.(?!(css|gif|ico|jpg|js|png|txt|md|svg|woff|ttf|map|json|xml|xsl|webp|mp4|webmanifest)$)([^.]+$)/>"
+    source = "</^[^.]+$|\\.(?!(css|gif|ico|jpg|jpeg|js|png|txt|md|svg|woff|woff2|ttf|map|json|xml|xsl|webp|avif|mp3|wav|ogg|mp4|webmanifest)$)([^.]+$)/>"
     target = "/index.html"
     status = "200"
   }
