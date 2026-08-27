@@ -1,0 +1,6 @@
+# Terraform y codigo de CloudFront Functions se leen tal cual (heredoc build_spec, file()):
+# con core.autocrlf=true en Windows entraban con CR y terraform plan mostraba drift falso
+# en aws_amplify_app.build_spec (audit 2026-08-26, ola 3).
+*.tf    text eol=lf
+*.tfvars text eol=lf
+*.js    text eol=lf
