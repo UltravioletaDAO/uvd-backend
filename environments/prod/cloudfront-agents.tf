@@ -12,17 +12,35 @@
 #   Z:/ultravioleta/code/web/docs/audit-2026-08-26/wave2/cloudfront-plan.md
 # Plantilla: 402milly (E4CYKFLYX3KQA, Z:/ultravioleta/dao/million/402milly/terraform/modules/cloudfront).
 #
-# Fases previstas:
-#   1. enable_agents_cloudfront=true, agents_dns_target="amplify"  -> crea cert + funciones +
-#      distribución; el apex queda igual (alias a Amplify, ahora gestionado por Terraform).
-#      Se prueba con `curl --resolve ultravioletadao.xyz:443:<ip de la distro>`.
-#   2. agents_dns_target="cloudfront" -> apex A/AAAA + www CNAME apuntan a la distro nueva.
-#   3. Rollback = agents_dns_target="amplify" + apply (UPSERT del apex de vuelta a Amplify).
+# BLOQUEO DESCUBIERTO EN LA OLA 3 (2026-08-27, ver docs/audit-2026-08-26/wave3/cloudfront-cutover.md):
+#   Los alternate domain names ultravioletadao.xyz y www.ultravioletadao.xyz ya están asociados
+#   a la distribución de Amplify (d1ongz452rso2c), que vive en la cuenta AWS de Amplify. CloudFront
+#   rechaza crear una distribución nuestra con esos aliases (409 CNAMEAlreadyExists: "DNS record
+#   that points to another CloudFront distribution") y, según la doc oficial, un APEX no se puede
+#   mover entre cuentas ni con wildcard ni con associate-alias (la fuente tendría que estar
+#   deshabilitada): solo AWS Support (TXT _.ultravioletadao.xyz) o que Amplify suelte el dominio.
+#   Por eso existe `agents_attach_aliases` (default false): la distribución se crea SIN aliases
+#   (se prueba por su dominio *.cloudfront.net) y los aliases se adjuntan solo cuando el dominio
+#   quede libre (decisión de Saul; secuencia y downtime medidos en cloudfront-cutover.md).
+#
+# Fases:
+#   1. enable_agents_cloudfront=true (attach=false, target=amplify) -> cert + funciones + cache
+#      policy + distribución SIN aliases; apex/www siguen en Amplify (adoptados por Terraform con
+#      el mismo valor).
+#   2. Cuando Amplify haya soltado apex+www (o Support los haya movido): agents_attach_aliases=true.
+#   3. agents_dns_target="cloudfront" -> apex A/AAAA + www CNAME apuntan a la distro nueva.
+#   4. Rollback = agents_dns_target="amplify" + apply (UPSERT del apex de vuelta a Amplify).
 #      NUNCA volver a enable_agents_cloudfront=false sin antes `terraform state rm` del apex
 #      (prevent_destroy lo bloquea a propósito: destruir el alias del apex = sitio caído).
 
 variable "enable_agents_cloudfront" {
   description = "Crea la distribución CloudFront propia (cert us-east-1, funciones, cache policy) delante de Amplify main. false => No changes."
+  type        = bool
+  default     = false
+}
+
+variable "agents_attach_aliases" {
+  description = "Adjunta ultravioletadao.xyz + www como aliases de la distribución propia. Solo puede ser true cuando esos nombres ya NO estén asociados a la distribución de Amplify (cuenta ajena): si no, CloudFront responde 409 CNAMEAlreadyExists."
   type        = bool
   default     = false
 }
@@ -47,6 +65,7 @@ provider "aws" {
 locals {
   agents_enabled = var.enable_agents_cloudfront
   agents_cutover = var.enable_agents_cloudfront && var.agents_dns_target == "cloudfront"
+  agents_aliases = var.agents_attach_aliases ? ["ultravioletadao.xyz", "www.ultravioletadao.xyz"] : []
 
   agents_apex   = "ultravioletadao.xyz"
   agents_www    = "www.ultravioletadao.xyz"
@@ -186,8 +205,8 @@ resource "aws_cloudfront_distribution" "agents" {
   is_ipv6_enabled = true
   http_version    = "http2and3"
   comment         = "ultravioletadao.xyz - Markdown for Agents delante de Amplify main (PM-NS-07)"
-  aliases         = [local.agents_apex, local.agents_www]
-  price_class     = "PriceClass_All" # audiencia LatAm: mismos edges que usa Amplify hoy
+  aliases         = local.agents_aliases # vacío hasta que Amplify suelte el dominio (ver cabecera)
+  price_class     = "PriceClass_All"     # audiencia LatAm: mismos edges que usa Amplify hoy
 
   origin {
     domain_name = local.agents_origin
@@ -248,6 +267,14 @@ resource "aws_cloudfront_distribution" "agents" {
   restrictions {
     geo_restriction {
       restriction_type = "none"
+    }
+  }
+
+  lifecycle {
+    # Cutover DNS sin aliases = 403 "CNAME not configured" en el apex. Bloqueado en plan.
+    precondition {
+      condition     = var.agents_dns_target != "cloudfront" || var.agents_attach_aliases
+      error_message = "agents_dns_target=cloudfront requiere agents_attach_aliases=true (la distribución tiene que tener el alias del apex antes de recibir tráfico)."
     }
   }
 
