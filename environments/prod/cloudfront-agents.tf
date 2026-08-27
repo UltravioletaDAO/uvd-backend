@@ -23,15 +23,23 @@
 #   (se prueba por su dominio *.cloudfront.net) y los aliases se adjuntan solo cuando el dominio
 #   quede libre (decisión de Saul; secuencia y downtime medidos en cloudfront-cutover.md).
 #
-# Fases:
+# Fases (secuencia VERIFICADA el 2026-08-27, ver cloudfront-cutover.md §3):
 #   1. enable_agents_cloudfront=true (attach=false, target=amplify) -> cert + funciones + cache
 #      policy + distribución SIN aliases; apex/www siguen en Amplify (adoptados por Terraform con
-#      el mismo valor).
-#   2. Cuando Amplify haya soltado apex+www (o Support los haya movido): agents_attach_aliases=true.
-#   3. agents_dns_target="cloudfront" -> apex A/AAAA + www CNAME apuntan a la distro nueva.
-#   4. Rollback = agents_dns_target="amplify" + apply (UPSERT del apex de vuelta a Amplify).
-#      NUNCA volver a enable_agents_cloudfront=false sin antes `terraform state rm` del apex
-#      (prevent_destroy lo bloquea a propósito: destruir el alias del apex = sitio caído).
+#      el mismo valor). ESTADO ACTUAL (E2X06GJ7IIP080 / d3pmar3410ktcs.cloudfront.net).
+#   2. agents_dns_target="cloudfront" (attach todavía false): apex A + www CNAME apuntan a la
+#      distro propia. CERO impacto: CloudFront enruta por el DUEÑO del alias (Host/SNI), no por IP,
+#      así que sigue respondiendo Amplify (experimento cloudfront-host-routing-experiment.txt).
+#      Este orden es obligatorio: CloudFront rechaza adjuntar el alias mientras el DNS apunte a
+#      OTRA distribución (el 409 de la fase 1).
+#   3. Amplify suelta apex+www (quitar los sub_domain "" y "www" de amplify.tf, update in-place)
+#      o AWS Support mueve el alias (TXT _.ultravioletadao.xyz / _www.ultravioletadao.xyz ->
+#      d3pmar3410ktcs.cloudfront.net). Desde que Amplify suelta, el apex responde 403 hasta el paso 4.
+#   4. agents_attach_aliases=true -> UpdateDistribution con los aliases (crea también el AAAA).
+#      Reintentar si CloudFront aún devuelve 409 (Amplify no soltó todavía).
+#   Rollback = orden inverso (attach=false -> target=amplify -> volver a poner los sub_domain en
+#      Amplify). NUNCA volver a enable_agents_cloudfront=false sin antes `terraform state rm` del
+#      apex (prevent_destroy lo bloquea a propósito: destruir el alias del apex = sitio caído).
 
 variable "enable_agents_cloudfront" {
   description = "Crea la distribución CloudFront propia (cert us-east-1, funciones, cache policy) delante de Amplify main. false => No changes."
@@ -270,14 +278,6 @@ resource "aws_cloudfront_distribution" "agents" {
     }
   }
 
-  lifecycle {
-    # Cutover DNS sin aliases = 403 "CNAME not configured" en el apex. Bloqueado en plan.
-    precondition {
-      condition     = var.agents_dns_target != "cloudfront" || var.agents_attach_aliases
-      error_message = "agents_dns_target=cloudfront requiere agents_attach_aliases=true (la distribución tiene que tener el alias del apex antes de recibir tráfico)."
-    }
-  }
-
   tags = local.agents_tags
 }
 
@@ -310,9 +310,10 @@ resource "aws_route53_record" "agents_apex_a" {
   }
 }
 
-# AAAA solo tras el cutover (la distro propia tiene IPv6; la de Amplify no publica AAAA hoy).
+# AAAA solo cuando la distro propia ya tiene el alias (fase 4): mientras el alias sea de Amplify,
+# no publicar IPv6 para el apex (la distro de Amplify no publica AAAA hoy).
 resource "aws_route53_record" "agents_apex_aaaa" {
-  count = local.agents_cutover ? 1 : 0
+  count = local.agents_cutover && var.agents_attach_aliases ? 1 : 0
 
   zone_id         = local.agents_zone
   name            = local.agents_apex
