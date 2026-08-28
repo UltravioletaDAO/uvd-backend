@@ -13,6 +13,12 @@ New-Item -ItemType Directory -Path "dist" -Force
 Write-Host "Copiando archivos de la función..."
 Copy-Item -Path "app.js" -Destination "dist/index.js"
 
+Write-Host "Copiando módulos del MCP remoto..."
+# app.js hace require('./mcp'), que a su vez requiere './mcpTools': si no viajan en el zip,
+# la Lambda muere al importar.
+Copy-Item -Path "mcp.js" -Destination "dist/"
+Copy-Item -Path "mcpTools.js" -Destination "dist/"
+
 Write-Host "Copiando package.json..."
 Copy-Item -Path "package.json" -Destination "dist/"
 
