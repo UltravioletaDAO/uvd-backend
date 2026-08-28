@@ -284,3 +284,75 @@ describe('CORS y rutas', () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+// El endpoint MCP se resuelve antes del bootstrap de MongoDB: acá solo se verifica el
+// ruteo dentro del handler. El contrato del protocolo vive en __tests__/mcp.test.js.
+describe('/mcp (ruteo en el handler)', () => {
+  it('POST /mcp responde el initialize del servidor MCP', async () => {
+    const res = await handler(
+      event('POST', '/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+      mockContext
+    );
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.result.serverInfo.name).toBe('ultravioletadao');
+    expect(body.result.protocolVersion).toBe('2025-06-18');
+  });
+
+  it('GET /mcp responde 405 con Allow y sin tocar la DB', async () => {
+    findOneMock.mockClear();
+    const res = await handler(event('GET', '/mcp'), mockContext);
+    expect(res.statusCode).toBe(405);
+    expect(res.headers.Allow).toBe('POST, OPTIONS');
+    expect(findOneMock).not.toHaveBeenCalled();
+  });
+
+  it('OPTIONS /mcp responde el preflight con los headers de MCP', async () => {
+    const res = await handler(event('OPTIONS', '/mcp'), mockContext);
+    expect(res.statusCode).toBe(204);
+    expect(res.headers['Access-Control-Allow-Headers']).toContain('mcp-protocol-version');
+  });
+
+  it('acepta el prefijo de stage /prod/mcp', async () => {
+    const res = await handler(event('POST', '/prod/mcp', { jsonrpc: '2.0', id: 2, method: 'ping' }), mockContext);
+    expect(JSON.parse(res.body).result).toEqual({});
+  });
+
+  it('apply_dao_membership entra por la ruta /apply real (201 + id)', async () => {
+    findOneMock.mockResolvedValue(null);
+    const res = await handler(
+      event('POST', '/mcp', {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'apply_dao_membership',
+          arguments: { name: 'Ana', email: 'ana@example.com', skills: ['Solidity'], motivation: 'construir' },
+        },
+      }),
+      mockContext
+    );
+    const result = JSON.parse(res.body).result;
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, id: 'test-id-123' });
+    expect(insertOneMock).toHaveBeenCalled();
+  });
+
+  it('un email inválido en la tool devuelve isError con el 400 del backend', async () => {
+    const res = await handler(
+      event('POST', '/mcp', {
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'apply_dao_membership',
+          arguments: { name: 'Ana', email: 'no-es-email', skills: ['x'], motivation: 'y' },
+        },
+      }),
+      mockContext
+    );
+    const result = JSON.parse(res.body).result;
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).error).toBe('apply_failed_400');
+  });
+});
