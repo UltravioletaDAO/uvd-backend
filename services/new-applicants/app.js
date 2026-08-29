@@ -7,6 +7,7 @@ const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client
 const validator = require('validator');
 const sanitize = require('mongo-sanitize');
 const { name: SERVICE_NAME, version: SERVICE_VERSION } = require('./package.json');
+const { handleMcpRequest } = require('./mcp');
 
 // ── Ruleta /wallets: auth del streamer + hygiene de logs (audit 2026-08-27, W-08/W-09) ──
 // Solo un token de Twitch (implicit flow del SPA) cuyo `login` esté en la allowlist puede
@@ -166,6 +167,32 @@ exports.handler = async (event, context) => {
     timestamp: new Date().toISOString()
   })}`);
   console.log("---------------------------------------------------");
+
+  // ── MCP remoto (/mcp) ────────────────────────────────────────────────────────
+  // Se resuelve ANTES del bootstrap de MongoDB: todas sus tools son lectura pública de
+  // fuentes externas, así que el endpoint sigue vivo aunque la base esté caída y no paga
+  // la conexión en cada llamada. La única tool de escritura reentra por la ruta /apply,
+  // que sí conecta (y ahí sí valida y guarda con la misma lógica de siempre).
+  {
+    const mcpPath = normalizePath(event.rawPath || event.path || '');
+    if (mcpPath === '/mcp' || mcpPath === 'mcp') {
+      const mcpMethod = event.requestContext?.http?.method || event.httpMethod || 'GET';
+      console.log(`[ROUTE_MATCH] Ruta /mcp coincide (${mcpMethod})`);
+      const mcpResponse = await handleMcpRequest(event, mcpMethod, {
+        applyApplication: (payload) => exports.handler(
+          {
+            rawPath: '/apply',
+            requestContext: { http: { method: 'POST' } },
+            headers: {},
+            body: JSON.stringify(payload)
+          },
+          context
+        )
+      });
+      console.log(`[LAMBDA_RESULT_EXPLICIT] Respuesta MCP: Status ${mcpResponse.statusCode}`);
+      return mcpResponse;
+    }
+  }
 
   // Obtener la URI de MongoDB si aún no la tenemos
   if (!mongoUri) {
@@ -488,6 +515,11 @@ exports.handler = async (event, context) => {
               path: '/health',
               method: 'GET',
               description: 'Health check (status, service, version, timestamp)'
+            },
+            {
+              path: '/mcp',
+              method: 'POST',
+              description: 'Remote MCP server (Streamable HTTP, JSON-RPC 2.0, no auth): initialize, tools/list, tools/call, ping'
             }
           ]
         }),
@@ -682,7 +714,7 @@ exports.handler = async (event, context) => {
         error: 'Ruta no encontrada',
         path: path,
         normalizedPath: normalizedPath,
-        availableRoutes: ['/apply', '/apply/status/{email}', '/test', '/health', '/']
+        availableRoutes: ['/apply', '/apply/status/{email}', '/mcp', '/test', '/health', '/']
       }),
       headers: {
         'Content-Type': 'application/json',
