@@ -104,6 +104,15 @@ frontend:
     status = "301"
   }
 
+  # /services se retiro (decision del fundador 2026-08-29): la oferta comercial murio y los dos
+  # productos que seguian vivos (Karma Hello, Abracadabra) tienen ficha en /ecosystem#productos.
+  # El fragmento #productos no viaja al servidor, asi que el 301 apunta a /ecosystem a secas.
+  custom_rule {
+    source = "/services"
+    target = "/ecosystem"
+    status = "301"
+  }
+
   # public/ecosystem/ existe como directorio de estáticos (graph.json, posters/): sin esta regla
   # el hosting puede responder 301 /ecosystem -> /ecosystem/ en vez de la SPA. Rewrite explícito.
   custom_rule {
